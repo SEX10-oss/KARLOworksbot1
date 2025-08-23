@@ -80,7 +80,7 @@ async function handleMessage(sender_psid, webhook_event) {
     if (sender_psid === ADMIN_ID) {
         const userStateObj = stateManager.getUserState(sender_psid);
         if (lowerCaseText === 'setup admin') {
-            await sendText(sender_psid, "✅ Setup initiated!\nPlease enter your GCash number and name in the format:\n`<11 digit number> <Your Name>`\n(e.g., 09123456789 John Doe)");
+            await sendText(sender_psid, "✅ Setup initiated!\nPlease enter your GCash number and name in the format:\n`<11 digit number> <Your Name>`\n(e.g., number John Doe)");
             stateManager.setUserState(sender_psid, 'awaiting_edit_admin');
             return;
         }
