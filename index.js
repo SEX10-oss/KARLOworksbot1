@@ -1,4 +1,4 @@
-// index.js (Final Version with Automatic Delivery Poller)
+// index.js (Final Version with Correct Admin Check & Auto-Delivery)
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
@@ -70,12 +70,34 @@ async function handleReceiptSubmission(sender_psid, imageUrl) {
 async function handleMessage(sender_psid, webhook_event) {
     const messageText = typeof webhook_event.message?.text === 'string' ? webhook_event.message.text.trim() : null;
     const lowerCaseText = messageText?.toLowerCase();
-    
-    const isAdmin = await dbManager.isAdmin(sender_psid);
 
-    if (isAdmin) {
+    // --- STEP 1: Handle SUPER ADMIN commands first, bypassing all other logic ---
+    if (sender_psid === ADMIN_ID) {
+        const userStateObj = stateManager.getUserState(sender_psid);
+        if (lowerCaseText === 'setup admin') {
+            await sendText(sender_psid, "✅ Setup initiated!\nPlease enter your GCash number and name in the format:\n`<11 digit number> <Your Name>`\n(e.g., 09123456789 John Doe)");
+            stateManager.setUserState(sender_psid, 'awaiting_edit_admin');
+            return;
+        }
+        if (userStateObj?.state === 'awaiting_edit_admin') {
+            return adminHandler.processEditAdmin(sender_psid, messageText, sendText);
+        }
+    }
+    
+    // --- STEP 2: Check if the user is a registered admin in the DATABASE ---
+    const isRegisteredAdmin = await dbManager.isAdmin(sender_psid);
+
+    if (isRegisteredAdmin) {
+        // This is the complete admin logic from your base file
         const userStateObj = stateManager.getUserState(sender_psid);
         const state = userStateObj?.state;
+        if (lowerCaseText === 'menu') {
+            stateManager.clearUserState(sender_psid);
+            return adminHandler.showAdminMenu(sender_psid, sendText);
+        }
+        if (lowerCaseText === 'my id') {
+            return sendText(sender_psid, `Your Facebook Page-Scoped ID is: ${sender_psid}`);
+        }
         if (state) {
             switch (state) {
                 case 'awaiting_reply_psid': return adminHandler.promptForReply_Step2_GetUsername(sender_psid, messageText, sendText);
@@ -90,7 +112,6 @@ async function handleMessage(sender_psid, webhook_event) {
                 case 'awaiting_edit_mod_continue': return adminHandler.processEditMod_Step5_Continue(sender_psid, messageText, sendText);
                 case 'awaiting_add_ref_number': return adminHandler.processAddRef_Step2_GetMod(sender_psid, messageText, sendText);
                 case 'awaiting_add_ref_mod_id': return adminHandler.processAddRef_Step3_Save(sender_psid, messageText, sendText);
-                case 'awaiting_edit_admin': return adminHandler.processEditAdmin(sender_psid, messageText, sendText);
                 case 'awaiting_edit_ref': return adminHandler.processEditRef(sender_psid, messageText, sendText);
                 case 'awaiting_add_mod': return adminHandler.processAddMod(sender_psid, messageText, sendText);
                 case 'awaiting_delete_ref': return adminHandler.processDeleteRef(sender_psid, messageText, sendText);
@@ -109,76 +130,79 @@ async function handleMessage(sender_psid, webhook_event) {
             case '10': return adminHandler.promptForReply_Step1_GetPSID(sender_psid, sendText);
             default: return adminHandler.showAdminMenu(sender_psid, sendText);
         }
-    } else {
-        const userStateObj = stateManager.getUserState(sender_psid);
-        if (!userStateObj || !userStateObj.lang) {
-            if (lowerCaseText === 'english' || lowerCaseText === '1') {
-                stateManager.setUserState(sender_psid, 'language_set', { lang: 'en' });
-                await userHandler.showUserMenu(sender_psid, sendText, 'en');
-                return;
-            } else if (lowerCaseText === 'tagalog' || lowerCaseText === '2') {
-                stateManager.setUserState(sender_psid, 'language_set', { lang: 'tl' });
-                await userHandler.showUserMenu(sender_psid, sendText, 'tl');
-                return;
-            } else {
-                const langPrompt = "Please select your language type the number only:\n\n1. English\n2. Tagalog";
-                await sendText(sender_psid, langPrompt);
-                stateManager.setUserState(sender_psid, 'awaiting_language_choice', {});
-                return;
-            }
-        }
-        
-        const userLang = userStateObj.lang;
-        const expectingReceipt = userStateObj?.state === 'awaiting_receipt_for_purchase' || userStateObj?.state === 'awaiting_receipt_for_custom_mod';
+        return; // Stop processing after handling admin logic
+    }
+    
+    // --- STEP 3: If not an admin, proceed with the regular user flow ---
+    const userStateObj = stateManager.getUserState(sender_psid);
 
-        if (expectingReceipt && webhook_event.message?.attachments?.[0]?.type === 'image') {
-            const imageUrl = webhook_event.message.attachments[0].payload.url;
-            await handleReceiptSubmission(sender_psid, imageUrl);
+    if (!userStateObj || !userStateObj.lang) {
+        if (lowerCaseText === 'english' || lowerCaseText === '1') {
+            stateManager.setUserState(sender_psid, 'language_set', { lang: 'en' });
+            await userHandler.showUserMenu(sender_psid, sendText, 'en');
+            return;
+        } else if (lowerCaseText === 'tagalog' || lowerCaseText === '2') {
+            stateManager.setUserState(sender_psid, 'language_set', { lang: 'tl' });
+            await userHandler.showUserMenu(sender_psid, sendText, 'tl');
+            return;
+        } else {
+            const langPrompt = "Please select your language type the number only:\n\n1. English\n2. Tagalog";
+            await sendText(sender_psid, langPrompt);
+            stateManager.setUserState(sender_psid, 'awaiting_language_choice', {});
             return;
         }
-        
-        if (expectingReceipt && messageText) {
-            await sendText(sender_psid, "It looks like you sent a message instead of a receipt, so the purchase has been cancelled. Feel free to start again from the menu! 😊");
-            stateManager.clearUserState(sender_psid);
-            stateManager.setUserState(sender_psid, 'language_set', { lang: userLang });
-            return;
-        }
+    }
+    
+    const userLang = userStateObj.lang;
+    const expectingReceipt = userStateObj?.state === 'awaiting_receipt_for_purchase' || userStateObj?.state === 'awaiting_receipt_for_custom_mod';
 
-        if (!messageText || messageText === '' || webhook_event.message?.sticker_id) {
-            return userHandler.showUserMenu(sender_psid, sendText, userLang);
-        }
+    if (expectingReceipt && webhook_event.message?.attachments?.[0]?.type === 'image') {
+        const imageUrl = webhook_event.message.attachments[0].payload.url;
+        await handleReceiptSubmission(sender_psid, imageUrl);
+        return;
+    }
+    
+    if (expectingReceipt && messageText) {
+        await sendText(sender_psid, "It looks like you sent a message instead of a receipt, so the purchase has been cancelled. Feel free to start again from the menu! 😊");
+        stateManager.clearUserState(sender_psid);
+        stateManager.setUserState(sender_psid, 'language_set', { lang: userLang });
+        return;
+    }
 
-        if (lowerCaseText === 'menu') {
-            stateManager.clearUserState(sender_psid);
-            stateManager.setUserState(sender_psid, 'language_set', { lang: userLang });
-            return userHandler.showUserMenu(sender_psid, sendText, userLang);
+    if (!messageText || messageText === '' || webhook_event.message?.sticker_id) {
+        return userHandler.showUserMenu(sender_psid, sendText, userLang);
+    }
+
+    if (lowerCaseText === 'menu') {
+        stateManager.clearUserState(sender_psid);
+        stateManager.setUserState(sender_psid, 'language_set', { lang: userLang });
+        return userHandler.showUserMenu(sender_psid, sendText, userLang);
+    }
+    
+    const state = userStateObj?.state;
+    if (state) {
+        switch (state) {
+            case 'awaiting_manual_ref': return userHandler.handleManualReference(sender_psid, messageText, sendText, userLang);
+            case 'awaiting_manual_mod': return userHandler.handleManualModSelection(sender_psid, messageText, sendText, sendImage, ADMIN_ID, userLang);
+            case 'awaiting_email_for_purchase': return userHandler.handleEmailForPurchase(sender_psid, messageText, sendText, userLang);
+            case 'awaiting_mod_confirmation': return userHandler.handleModConfirmation(sender_psid, messageText, sendText, ADMIN_ID, userLang);
+            case 'awaiting_mod_clarification': return userHandler.handleModClarification(sender_psid, messageText, sendText, ADMIN_ID, userLang);
+            case 'awaiting_want_mod': return userHandler.handleWantMod(sender_psid, messageText, sendText, userLang);
+            case 'awaiting_ref_for_check': return userHandler.processCheckClaims(sender_psid, messageText, sendText, userLang);
+            case 'awaiting_ref_for_replacement': return userHandler.processReplacementRequest(sender_psid, messageText, sendText, userLang);
+            case 'awaiting_admin_message': return userHandler.forwardMessageToAdmin(sender_psid, messageText, sendText, ADMIN_ID, userLang);
+            case 'awaiting_custom_mod_order': return userHandler.handleCustomModOrder(sender_psid, messageText, sendText, userLang);
         }
-        
-        const state = userStateObj?.state;
-        if (state) {
-            switch (state) {
-                case 'awaiting_manual_ref': return userHandler.handleManualReference(sender_psid, messageText, sendText, userLang);
-                case 'awaiting_manual_mod': return userHandler.handleManualModSelection(sender_psid, messageText, sendText, sendImage, ADMIN_ID, userLang);
-                case 'awaiting_email_for_purchase': return userHandler.handleEmailForPurchase(sender_psid, messageText, sendText, userLang);
-                case 'awaiting_mod_confirmation': return userHandler.handleModConfirmation(sender_psid, messageText, sendText, ADMIN_ID, userLang);
-                case 'awaiting_mod_clarification': return userHandler.handleModClarification(sender_psid, messageText, sendText, ADMIN_ID, userLang);
-                case 'awaiting_want_mod': return userHandler.handleWantMod(sender_psid, messageText, sendText, userLang);
-                case 'awaiting_ref_for_check': return userHandler.processCheckClaims(sender_psid, messageText, sendText, userLang);
-                case 'awaiting_ref_for_replacement': return userHandler.processReplacementRequest(sender_psid, messageText, sendText, userLang);
-                case 'awaiting_admin_message': return userHandler.forwardMessageToAdmin(sender_psid, messageText, sendText, ADMIN_ID, userLang);
-                case 'awaiting_custom_mod_order': return userHandler.handleCustomModOrder(sender_psid, messageText, sendText, userLang);
-            }
-        }
-        
-        switch (lowerCaseText) {
-            case '1': return userHandler.handleViewMods(sender_psid, sendText, userLang);
-            case '2': return userHandler.promptForCheckClaims(sender_psid, sendText, userLang);
-            case '3': return userHandler.promptForReplacement(sender_psid, sendText, userLang);
-            case '4': return userHandler.promptForCustomMod(sender_psid, sendText, userLang);
-            case '5': return userHandler.promptForAdminMessage(sender_psid, sendText, userLang);
-            case '6': return userHandler.handleViewProofs(sender_psid, sendText, userLang);
-            default: return userHandler.showUserMenu(sender_psid, sendText, userLang);
-        }
+    }
+    
+    switch (lowerCaseText) {
+        case '1': return userHandler.handleViewMods(sender_psid, sendText, userLang);
+        case '2': return userHandler.promptForCheckClaims(sender_psid, sendText, userLang);
+        case '3': return userHandler.promptForReplacement(sender_psid, sendText, userLang);
+        case '4': return userHandler.promptForCustomMod(sender_psid, sendText, userLang);
+        case '5': return userHandler.promptForAdminMessage(sender_psid, sendText, userLang);
+        case '6': return userHandler.handleViewProofs(sender_psid, sendText, userLang);
+        default: return userHandler.showUserMenu(sender_psid, sendText, userLang);
     }
 }
 
@@ -208,7 +232,7 @@ async function startServer() {
             console.log(`✅ Bot is listening on port ${PORT} at host ${HOST}.`);
             
             console.log('🚀 Starting automatic account delivery poller...');
-            setInterval(pollForCompletedJobs, 20000);
+            setInterval(pollForCompletedJobs, 20000); // Check every 20 seconds
         });
     } catch (error) {
         console.error("Server failed to start:", error);
