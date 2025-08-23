@@ -71,7 +71,12 @@ async function handleMessage(sender_psid, webhook_event) {
     const messageText = typeof webhook_event.message?.text === 'string' ? webhook_event.message.text.trim() : null;
     const lowerCaseText = messageText?.toLowerCase();
 
-    // --- STEP 1: Handle SUPER ADMIN commands first, bypassing all other logic ---
+    // --- STEP 1: Handle universal commands first, bypassing all other logic ---
+    if (lowerCaseText === 'my id') {
+        return sendText(sender_psid, `Your Facebook Page-Scoped ID is: ${sender_psid}`);
+    }
+
+    // --- STEP 2: Handle SUPER ADMIN commands ---
     if (sender_psid === ADMIN_ID) {
         const userStateObj = stateManager.getUserState(sender_psid);
         if (lowerCaseText === 'setup admin') {
@@ -84,7 +89,7 @@ async function handleMessage(sender_psid, webhook_event) {
         }
     }
     
-    // --- STEP 2: Check if the user is a registered admin in the DATABASE ---
+    // --- STEP 3: Check if the user is a registered admin in the DATABASE ---
     const isRegisteredAdmin = await dbManager.isAdmin(sender_psid);
 
     if (isRegisteredAdmin) {
@@ -94,9 +99,6 @@ async function handleMessage(sender_psid, webhook_event) {
         if (lowerCaseText === 'menu') {
             stateManager.clearUserState(sender_psid);
             return adminHandler.showAdminMenu(sender_psid, sendText);
-        }
-        if (lowerCaseText === 'my id') {
-            return sendText(sender_psid, `Your Facebook Page-Scoped ID is: ${sender_psid}`);
         }
         if (state) {
             switch (state) {
@@ -130,12 +132,11 @@ async function handleMessage(sender_psid, webhook_event) {
             case '10': return adminHandler.promptForReply_Step1_GetPSID(sender_psid, sendText);
             default: return adminHandler.showAdminMenu(sender_psid, sendText);
         }
-        return; // Stop processing after handling admin logic
+        return;
     }
     
-    // --- STEP 3: If not an admin, proceed with the regular user flow ---
+    // --- STEP 4: If not an admin, proceed with the regular user flow ---
     const userStateObj = stateManager.getUserState(sender_psid);
-
     if (!userStateObj || !userStateObj.lang) {
         if (lowerCaseText === 'english' || lowerCaseText === '1') {
             stateManager.setUserState(sender_psid, 'language_set', { lang: 'en' });
@@ -155,7 +156,6 @@ async function handleMessage(sender_psid, webhook_event) {
     
     const userLang = userStateObj.lang;
     const expectingReceipt = userStateObj?.state === 'awaiting_receipt_for_purchase' || userStateObj?.state === 'awaiting_receipt_for_custom_mod';
-
     if (expectingReceipt && webhook_event.message?.attachments?.[0]?.type === 'image') {
         const imageUrl = webhook_event.message.attachments[0].payload.url;
         await handleReceiptSubmission(sender_psid, imageUrl);
@@ -230,9 +230,8 @@ async function startServer() {
         const HOST = '0.0.0.0';
         app.listen(PORT, HOST, () => {
             console.log(`✅ Bot is listening on port ${PORT} at host ${HOST}.`);
-            
             console.log('🚀 Starting automatic account delivery poller...');
-            setInterval(pollForCompletedJobs, 20000); // Check every 20 seconds
+            setInterval(pollForCompletedJobs, 20000);
         });
     } catch (error) {
         console.error("Server failed to start:", error);
