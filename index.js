@@ -1,4 +1,4 @@
-// index.js (Updated to call the new fallback function)
+// index.js (Final Version with Automatic Delivery Poller)
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
@@ -9,6 +9,7 @@ const userHandler = require('./user_handler.js');
 const adminHandler = require('./admin_handler.js');
 const secrets = require('./secrets.js');
 const paymentVerifier = require('./payment_verifier.js');
+
 const app = express();
 app.use(express.json());
 const { PAGE_ACCESS_TOKEN, VERIFY_TOKEN, ADMIN_ID } = secrets;
@@ -40,8 +41,6 @@ async function handleReceiptSubmission(sender_psid, imageUrl) {
         const image_b64 = await paymentVerifier.encodeImage(imageBuffer);
         if (!image_b64) throw new Error("Failed to encode image.");
         
-        // --- THIS IS THE ONLY LINE THAT CHANGES ---
-        // It now calls the new orchestrator function, passing both formats of the image.
         const analysis = await paymentVerifier.analyzeReceiptWithFallback(imageUrl, image_b64);
 
         if (!analysis) throw new Error("AI analysis returned null.");
@@ -72,24 +71,11 @@ async function handleMessage(sender_psid, webhook_event) {
     const messageText = typeof webhook_event.message?.text === 'string' ? webhook_event.message.text.trim() : null;
     const lowerCaseText = messageText?.toLowerCase();
     
-    // --- FIX: MOVED ADMIN CHECK TO THE TOP ---
     const isAdmin = await dbManager.isAdmin(sender_psid);
 
     if (isAdmin) {
-        // --- ADMIN LOGIC ---
-        // If the user is an admin, completely bypass language selection and user menus.
         const userStateObj = stateManager.getUserState(sender_psid);
         const state = userStateObj?.state;
-
-        if (lowerCaseText === 'menu') {
-            stateManager.clearUserState(sender_psid);
-            return adminHandler.showAdminMenu(sender_psid, sendText);
-        }
-
-        if (lowerCaseText === 'my id') {
-            return sendText(sender_psid, `Your Facebook Page-Scoped ID is: ${sender_psid}`);
-        }
-        
         if (state) {
             switch (state) {
                 case 'awaiting_reply_psid': return adminHandler.promptForReply_Step2_GetUsername(sender_psid, messageText, sendText);
@@ -123,12 +109,8 @@ async function handleMessage(sender_psid, webhook_event) {
             case '10': return adminHandler.promptForReply_Step1_GetPSID(sender_psid, sendText);
             default: return adminHandler.showAdminMenu(sender_psid, sendText);
         }
-
     } else {
-        // --- USER LOGIC ---
-        // If the user is not an admin, proceed with the language check and regular flow.
         const userStateObj = stateManager.getUserState(sender_psid);
-
         if (!userStateObj || !userStateObj.lang) {
             if (lowerCaseText === 'english' || lowerCaseText === '1') {
                 stateManager.setUserState(sender_psid, 'language_set', { lang: 'en' });
@@ -150,10 +132,8 @@ async function handleMessage(sender_psid, webhook_event) {
         const expectingReceipt = userStateObj?.state === 'awaiting_receipt_for_purchase' || userStateObj?.state === 'awaiting_receipt_for_custom_mod';
 
         if (expectingReceipt && webhook_event.message?.attachments?.[0]?.type === 'image') {
-            if (!webhook_event.message?.sticker_id) {
-                const imageUrl = webhook_event.message.attachments[0].payload.url;
-                await handleReceiptSubmission(sender_psid, imageUrl);
-            }
+            const imageUrl = webhook_event.message.attachments[0].payload.url;
+            await handleReceiptSubmission(sender_psid, imageUrl);
             return;
         }
         
@@ -174,10 +154,6 @@ async function handleMessage(sender_psid, webhook_event) {
             return userHandler.showUserMenu(sender_psid, sendText, userLang);
         }
         
-        if (lowerCaseText === 'my id') {
-             return sendText(sender_psid, `Your Facebook Page-Scoped ID is: ${sender_psid}`);
-        }
-
         const state = userStateObj?.state;
         if (state) {
             switch (state) {
@@ -193,6 +169,7 @@ async function handleMessage(sender_psid, webhook_event) {
                 case 'awaiting_custom_mod_order': return userHandler.handleCustomModOrder(sender_psid, messageText, sendText, userLang);
             }
         }
+        
         switch (lowerCaseText) {
             case '1': return userHandler.handleViewMods(sender_psid, sendText, userLang);
             case '2': return userHandler.promptForCheckClaims(sender_psid, sendText, userLang);
@@ -227,8 +204,40 @@ async function startServer() {
         });
         const PORT = process.env.PORT || 3000;
         const HOST = '0.0.0.0';
-        app.listen(PORT, HOST, () => { console.log(`✅ Bot is listening on port ${PORT} at host ${HOST}.`); });
-    } catch (error) { console.error("Server failed to start:", error); }
+        app.listen(PORT, HOST, () => {
+            console.log(`✅ Bot is listening on port ${PORT} at host ${HOST}.`);
+            
+            console.log('🚀 Starting automatic account delivery poller...');
+            setInterval(pollForCompletedJobs, 20000);
+        });
+    } catch (error) {
+        console.error("Server failed to start:", error);
+    }
+}
+
+async function pollForCompletedJobs() {
+    try {
+        const completedJobs = await dbManager.getCompletedJobs();
+        for (const job of completedJobs) {
+            console.log(`Found completed job ${job.job_id}. Delivering to user ${job.requester_psid}...`);
+            const userMessage = `🎉 Your account is ready!\n\n${job.result_message}\n\nEnjoy the game! 💙`;
+            await sendText(job.requester_psid, userMessage);
+            const adminMessage = `✅ Order Delivered!\nJob ID: ${job.job_id}\nUser PSID: ${job.requester_psid}\nDetails: ${job.result_message}`;
+            await sendText(ADMIN_ID, adminMessage);
+            await dbManager.updateJobStatusOnDelivery(job.job_id, 'delivered');
+        }
+
+        const failedJobs = await dbManager.getFailedJobs();
+        for (const job of failedJobs) {
+             console.log(`Found failed job ${job.job_id}. Notifying admin...`);
+             const adminMessage = `❌ Account Creation Failed!\nJob ID: ${job.job_id}\nUser PSID: ${job.requester_psid}\nReason: ${job.result_message}`;
+             await sendText(ADMIN_ID, adminMessage);
+             await dbManager.updateJobStatusOnDelivery(job.job_id, 'failed_notified');
+        }
+
+    } catch (error) {
+        console.error("Error in job poller:", error.message);
+    }
 }
 
 startServer();
