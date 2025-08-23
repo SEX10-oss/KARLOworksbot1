@@ -1,4 +1,4 @@
-// index.js (Final Version with Correct Admin & my id Logic)
+// index.js (Final Version with Correct Admin Check & Auto-Delivery)
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
@@ -227,9 +227,37 @@ async function startServer() {
         const HOST = '0.0.0.0';
         app.listen(PORT, HOST, () => {
             console.log(`✅ Bot is listening on port ${PORT} at host ${HOST}.`);
+            console.log('🚀 Starting automatic account delivery poller...');
+            setInterval(pollForCompletedJobs, 20000);
         });
     } catch (error) {
         console.error("Server failed to start:", error);
     }
 }
+
+async function pollForCompletedJobs() {
+    try {
+        const completedJobs = await dbManager.getCompletedJobs();
+        for (const job of completedJobs) {
+            console.log(`Found completed job ${job.job_id}. Delivering to user ${job.requester_psid}...`);
+            const userMessage = `🎉 Your account is ready!\n\n${job.result_message}\n\nEnjoy the game! 💙`;
+            await sendText(job.requester_psid, userMessage);
+            const adminMessage = `✅ Order Delivered!\nJob ID: ${job.job_id}\nUser PSID: ${job.requester_psid}\nDetails: ${job.result_message}`;
+            await sendText(ADMIN_ID, adminMessage);
+            await dbManager.updateJobStatusOnDelivery(job.job_id, 'delivered');
+        }
+
+        const failedJobs = await dbManager.getFailedJobs();
+        for (const job of failedJobs) {
+             console.log(`Found failed job ${job.job_id}. Notifying admin...`);
+             const adminMessage = `❌ Account Creation Failed!\nJob ID: ${job.job_id}\nUser PSID: ${job.requester_psid}\nReason: ${job.result_message}`;
+             await sendText(ADMIN_ID, adminMessage);
+             await dbManager.updateJobStatusOnDelivery(job.job_id, 'failed_notified');
+        }
+
+    } catch (error) {
+        console.error("Error in job poller:", error.message);
+    }
+}
+
 startServer();
