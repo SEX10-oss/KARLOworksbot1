@@ -1,4 +1,4 @@
-// index.js (Final Version with Correct Admin Check & Auto-Delivery)
+// index.js (Final Version with Correct Admin & my id Logic)
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
@@ -69,9 +69,12 @@ async function handleReceiptSubmission(sender_psid, imageUrl) {
 
 async function handleMessage(sender_psid, webhook_event) {
     const messageText = typeof webhook_event.message?.text === 'string' ? webhook_event.message.text.trim() : null;
-    const lowerCaseText = messageText?.toLowerCase();
+    if (!messageText) {
+        return;
+    }
+    const lowerCaseText = messageText.toLowerCase();
 
-    // --- STEP 1: Handle universal commands first, bypassing all other logic ---
+    // --- STEP 1: Handle universal commands that anyone can use ---
     if (lowerCaseText === 'my id') {
         return sendText(sender_psid, `Your Facebook Page-Scoped ID is: ${sender_psid}`);
     }
@@ -80,7 +83,7 @@ async function handleMessage(sender_psid, webhook_event) {
     if (sender_psid === ADMIN_ID) {
         const userStateObj = stateManager.getUserState(sender_psid);
         if (lowerCaseText === 'setup admin') {
-            await sendText(sender_psid, "✅ Setup initiated!\nPlease enter your GCash number and name in the format:\n`<11 digit number> <Your Name>`\n(e.g., number John Doe)");
+            await sendText(sender_psid, "✅ Setup initiated!\nPlease enter your GCash number and name in the format:\n`<11 digit number> <Your Name>`\n(e.g., 09123456789 John Doe)");
             stateManager.setUserState(sender_psid, 'awaiting_edit_admin');
             return;
         }
@@ -91,9 +94,7 @@ async function handleMessage(sender_psid, webhook_event) {
     
     // --- STEP 3: Check if the user is a registered admin in the DATABASE ---
     const isRegisteredAdmin = await dbManager.isAdmin(sender_psid);
-
     if (isRegisteredAdmin) {
-        // This is the complete admin logic from your base file
         const userStateObj = stateManager.getUserState(sender_psid);
         const state = userStateObj?.state;
         if (lowerCaseText === 'menu') {
@@ -169,10 +170,6 @@ async function handleMessage(sender_psid, webhook_event) {
         return;
     }
 
-    if (!messageText || messageText === '' || webhook_event.message?.sticker_id) {
-        return userHandler.showUserMenu(sender_psid, sendText, userLang);
-    }
-
     if (lowerCaseText === 'menu') {
         stateManager.clearUserState(sender_psid);
         stateManager.setUserState(sender_psid, 'language_set', { lang: userLang });
@@ -230,37 +227,9 @@ async function startServer() {
         const HOST = '0.0.0.0';
         app.listen(PORT, HOST, () => {
             console.log(`✅ Bot is listening on port ${PORT} at host ${HOST}.`);
-            console.log('🚀 Starting automatic account delivery poller...');
-            setInterval(pollForCompletedJobs, 20000);
         });
     } catch (error) {
         console.error("Server failed to start:", error);
     }
 }
-
-async function pollForCompletedJobs() {
-    try {
-        const completedJobs = await dbManager.getCompletedJobs();
-        for (const job of completedJobs) {
-            console.log(`Found completed job ${job.job_id}. Delivering to user ${job.requester_psid}...`);
-            const userMessage = `🎉 Your account is ready!\n\n${job.result_message}\n\nEnjoy the game! 💙`;
-            await sendText(job.requester_psid, userMessage);
-            const adminMessage = `✅ Order Delivered!\nJob ID: ${job.job_id}\nUser PSID: ${job.requester_psid}\nDetails: ${job.result_message}`;
-            await sendText(ADMIN_ID, adminMessage);
-            await dbManager.updateJobStatusOnDelivery(job.job_id, 'delivered');
-        }
-
-        const failedJobs = await dbManager.getFailedJobs();
-        for (const job of failedJobs) {
-             console.log(`Found failed job ${job.job_id}. Notifying admin...`);
-             const adminMessage = `❌ Account Creation Failed!\nJob ID: ${job.job_id}\nUser PSID: ${job.requester_psid}\nReason: ${job.result_message}`;
-             await sendText(ADMIN_ID, adminMessage);
-             await dbManager.updateJobStatusOnDelivery(job.job_id, 'failed_notified');
-        }
-
-    } catch (error) {
-        console.error("Error in job poller:", error.message);
-    }
-}
-
 startServer();
