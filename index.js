@@ -74,12 +74,10 @@ async function handleMessage(sender_psid, webhook_event) {
     }
     const lowerCaseText = messageText.toLowerCase();
 
-    // --- STEP 1: Handle universal commands that anyone can use ---
     if (lowerCaseText === 'my id') {
         return sendText(sender_psid, `Your Facebook Page-Scoped ID is: ${sender_psid}`);
     }
 
-    // --- STEP 2: Handle SUPER ADMIN commands ---
     if (sender_psid === ADMIN_ID) {
         const userStateObj = stateManager.getUserState(sender_psid);
         if (lowerCaseText === 'setup admin') {
@@ -92,7 +90,6 @@ async function handleMessage(sender_psid, webhook_event) {
         }
     }
     
-    // --- STEP 3: Check if the user is a registered admin in the DATABASE ---
     const isRegisteredAdmin = await dbManager.isAdmin(sender_psid);
     if (isRegisteredAdmin) {
         const userStateObj = stateManager.getUserState(sender_psid);
@@ -136,7 +133,6 @@ async function handleMessage(sender_psid, webhook_event) {
         return;
     }
     
-    // --- STEP 4: If not an admin, proceed with the regular user flow ---
     const userStateObj = stateManager.getUserState(sender_psid);
     if (!userStateObj || !userStateObj.lang) {
         if (lowerCaseText === 'english' || lowerCaseText === '1') {
