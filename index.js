@@ -70,6 +70,13 @@ async function handleReceiptSubmission(sender_psid, imageUrl) {
 async function handleMessage(sender_psid, webhook_event) {
     const messageText = typeof webhook_event.message?.text === 'string' ? webhook_event.message.text.trim() : null;
     if (!messageText) {
+        if (webhook_event.message?.attachments?.[0]?.type === 'image') {
+            const userState = stateManager.getUserState(sender_psid);
+            if (userState?.state === 'awaiting_receipt_for_purchase' || userState?.state === 'awaiting_receipt_for_custom_mod') {
+                const imageUrl = webhook_event.message.attachments[0].payload.url;
+                await handleReceiptSubmission(sender_psid, imageUrl);
+            }
+        }
         return;
     }
     const lowerCaseText = messageText.toLowerCase();
